@@ -13,7 +13,7 @@ Driven by the great success of Large Language Models (LLMs) in the 2D image doma
 
 ## 🔨 Preparation
 
-- We update our codebase to Chat-Scene.
+- We update our codebase to [Chat-Scene](https://github.com/ZzZZCHS/Chat-Scene).
 
 - Prepare the environment:
   
@@ -29,6 +29,7 @@ Driven by the great success of Large Language Models (LLMs) in the 2D image doma
 
   - Change the `llama_model_path` in [run.sh](./scripts/run.sh) to the path of `vicuna-7b-v1.5`.
   
+- Download Our View2Cap dataset from [OneDrive](https://cuhko365-my.sharepoint.com/:f:/g/personal/221019046_link_cuhk_edu_cn/En2Q-D6RkbpFkkVDUZfm-1cBW0gX16O6fRC_CP33_TGy8A?e=jhv1il)
 
 - Annotations and extracted features:
   

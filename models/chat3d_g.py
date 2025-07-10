@@ -10,7 +10,6 @@ import torch.nn.functional as F
 from transformers import LlamaTokenizer, LlamaConfig, LlamaForCausalLM
 from models.position_embedding import PositionEmbeddingCoordsSine
 from peft import LoraConfig, get_peft_model
-# from models.load_llama import init_llama_model
 from torch.nn.utils.rnn import pad_sequence
 
 import contextlib
@@ -34,7 +33,7 @@ def print_grad_status(model):
                                             list(p.shape)))
 
 
-class Chat3D(nn.Module):
+class Chat3D_G(nn.Module):
     """
     VideoChat model.
     """
@@ -136,6 +135,11 @@ class Chat3D(nn.Module):
             self.objid_end_idx = len(self.llama_tokenizer)
             self.llama_model.resize_token_embeddings(len(self.llama_tokenizer))
 
+            special_tokens = ["<GRD>"]
+            _num_new_tokens = self.llama_tokenizer.add_tokens(special_tokens, special_tokens=True)
+            self.seg_token_idx = self.llama_tokenizer("<GRD>", add_special_tokens=False).input_ids[0]
+            self.llama_model.resize_token_embeddings(len(self.llama_tokenizer))
+
             # if self.use_location_token:
             #     location_tokens = ["<LOCATION>", "</LOCATION>"]
             #     for i in range(1000):
@@ -156,8 +160,9 @@ class Chat3D(nn.Module):
         if not self.train_img_proj:
             for p in self.object_img_proj.parameters():
                 p.requires_grad = False
-        self.pos_embedding = PositionEmbeddingCoordsSine(d_pos=self.pos_dim)
+        self.pos_embedding = PositionEmbeddingCoordsSine(d_pos=self.pos_dim, normalize=False)
         self.pos_proj = nn.Sequential(nn.Linear(self.pos_dim, self.llama_dim))
+        self.locs_proj = nn.Sequential(nn.Linear(6, self.pos_dim))
         # self.encoder_layer = nn.TransformerEncoderLayer(d_model=self.scene_dim, nhead=8, dim_feedforward=2048, dropout=0.05, norm_first=True, batch_first=True)
         # self.relation_module = nn.TransformerEncoder(self.encoder_layer, num_layers=config.model.encoder_num_layers)
         # self.scene_init_proj = nn.Sequential(
@@ -185,6 +190,28 @@ class Chat3D(nn.Module):
         if not self.debug:
             self.p_0_embed, self.p_1_embed = self.prepare_fixed_embed()
         self.last_embed = None
+
+        # self.scene_feat_linear = nn.Sequential(nn.Linear(self.llama_dim, self.input_dim), nn.GELU())
+        self.aux_reg = nn.Sequential(
+            nn.Linear(self.llama_dim, self.input_dim),     # 1024 -> 768
+            nn.GELU(),
+            nn.Dropout(0.1),
+            nn.Linear(self.input_dim, 7)     # 768 -> 9
+        )
+
+        self.position_head = nn.Sequential(
+            nn.Linear(self.llama_dim, 256),
+            nn.GELU(),
+            nn.Dropout(0.1),
+            nn.Linear(256, 1),
+            nn.Sigmoid()     # Position likelihood should be between 0 and 1
+        )
+        self.rotation_head = nn.Sequential(
+            nn.Linear(self.llama_dim, 256),
+            nn.GELU(),
+            nn.Dropout(0.1),
+            nn.Linear(256, 4),     # 6D rotation representation
+        )
 
         # print_grad_status(self)
 
@@ -356,12 +383,13 @@ class Chat3D(nn.Module):
                       **kwargs):
         object_embed, object_img_embed = self.encode_object_feat(scene_feat, scene_img_feat, scene_locs)
         device = object_embed.device
-        batch_size = object_embed.shape[0]
+        batch_size, num_obj = object_embed.shape[:2]
         proj_object_embed = self.object_proj(object_embed)
         proj_object_img_embed = self.object_img_proj(object_img_embed)
         if self.add_pos_emb:
             mins, maxs = self.get_min_max_coord(scene_locs[:, :, :3], scene_mask)
-            pos_embed = self.pos_embedding(scene_locs[:, :, :3], input_range=[mins, maxs]) / 10
+            # pos_embed = self.pos_embedding(scene_locs[:, :, :3], input_range=[mins, maxs]) / 10
+            pos_embed = self.locs_proj(scene_locs)
             proj_pos_embed = self.pos_proj(pos_embed)
             proj_object_embed = proj_object_embed + proj_pos_embed
             proj_object_img_embed = proj_object_img_embed + proj_pos_embed
@@ -444,12 +472,50 @@ class Chat3D(nn.Module):
                 inputs_embeds=input_embeds,
                 attention_mask=attention_mask,
                 return_dict=True,
+                output_hidden_states=True,
                 labels=targets,
             # label_weights=label_weights
             )
 
+        grd_ind_0, grd_ind_1 = (targets == self.seg_token_idx).nonzero(as_tuple=True)
+
+        # gather grd token
+        last_hidden_state = outputs.hidden_states[-1]
+        output_grd = last_hidden_state[grd_ind_0, grd_ind_1 + 1]
+        output_grd = output_grd.unsqueeze(1).repeat(1, num_obj, 1)
+        # fused_feat = torch.cat([proj_object_embed, proj_object_img_embed, output_grd], dim=-1)
+        fused_feat = proj_object_embed + proj_object_img_embed + output_grd
+
+        pos_likelihood = self.position_head(fused_feat).squeeze(-1)
+        rotation_pred = self.rotation_head(fused_feat)
+
+        # --------- Add situational PE to the scene_feat ---------
+        gt_translation = kwargs["pos"][:, :2]     # [32, 3]
+        gt_rotation = kwargs["pos"][:, 5:]     # [32, 4]
+
+        # calculate among scene_positions. Only compare with the first 2 dimensions
+        gt_translation = gt_translation.unsqueeze(1)[:, :, :2]     # [32, 1, 2]
+        distance = torch.norm(scene_locs[:, :, :2] - gt_translation, dim=2)     # [32, 256]
+        # distance = gt_translation - scene_locs[:, :, :2]     # [32, 256, 2]
+
+        # weights = torch.exp(-distance**2 / (2 * 0.16**2))     # [32, 256]
+        # weights = weights / weights.sum(dim=1, keepdim=True)     # [32, 256]
+        target = distance.argmin(dim=1)     # [32]
+        # pos_pred = (rotation_pred[:, :, :2] + scene_locs[:, :, :2]).mean(1)     # [32, 2]
+        # loss_pos = F.l1_loss(pos_pred, gt_translation)
+
+        loss_pos = F.cross_entropy(pos_likelihood, target)
+        loss_rot = F.l1_loss(rotation_pred[:, :, 2:], gt_rotation.unsqueeze(1))
+        aux_loss = loss_rot     #loss_pos     # + loss_rot
+
+        # aux_scores = self.aux_reg(output_grd)
+        # aux_scores = rotation_pred.mean(1)
+        # aux_loss = F.l1_loss(aux_scores, kwargs["pos"])
+
         return dict(
-            loss=outputs.loss,
+            loss=outputs.loss + aux_loss,
+            pos_loss=loss_pos,
+            rot_loss=loss_rot,
             obj_norm=proj_object_embed.norm(dim=-1).mean().detach().cpu(),
             obj_img_norm=proj_object_img_embed.norm(dim=-1).mean().detach().cpu(),
             objid_norm=self.get_objid_embeds().norm(dim=-1).mean().detach().cpu(),
@@ -468,12 +534,13 @@ class Chat3D(nn.Module):
                  **kwargs):
         object_embed, object_img_embed = self.encode_object_feat(scene_feat, scene_img_feat, scene_locs)
         device = object_embed.device
-        batch_size, obj_num = object_embed.shape[:2]
+        batch_size, num_obj = object_embed.shape[:2]
         proj_object_embed = self.object_proj(object_embed)
         proj_object_img_embed = self.object_img_proj(object_img_embed)
         if self.add_pos_emb:
             mins, maxs = self.get_min_max_coord(scene_locs[:, :, :3], scene_mask)
-            pos_embed = self.pos_embedding(scene_locs[:, :, :3], input_range=[mins, maxs]) / 10
+            # pos_embed = self.pos_embedding(scene_locs[:, :, :3], input_range=[mins, maxs]) / 10
+            pos_embed = self.locs_proj(scene_locs)
             proj_pos_embed = self.pos_proj(pos_embed)
             proj_object_embed = proj_object_embed + proj_pos_embed
             proj_object_img_embed = proj_object_img_embed + proj_pos_embed
@@ -489,6 +556,7 @@ class Chat3D(nn.Module):
             proj_scene_embed = self.scene_proj(scene_embed)
 
         output_texts = []
+        grd_list = []
         p_0_embed = self.p_0_embed.to(device).unsqueeze(0)
         p_1_embed = self.p_1_embed.to(device).unsqueeze(0)
         for i in range(batch_size):
@@ -522,15 +590,65 @@ class Chat3D(nn.Module):
                     repetition_penalty=3.0,
                     length_penalty=1,
                     temperature=1.0,
-                    customized_mask=attention_mask)
-            output_token = outputs[0]
+                    customized_mask=attention_mask,
+                    return_dict_in_generate=True,
+                    output_hidden_states=True,
+                    output_scores=True)
+            output_token = outputs.sequences[0]
             output_text = self.llama_tokenizer.decode(output_token)
+            # print(output_text)
+
+            beam_indices = outputs.beam_indices[0]     # bs x step, beam indices range (bsxbeam)
+            hidden_states = outputs.hidden_states     # step x layer x (bs x beam) x token_num x hidden_dim
+            # print(len(hidden_states), len(hidden_states[0]), hidden_states[0][0].shape)
+            last_hidden_state = hidden_states[0][-1]
+            # print(beam_indices.shape, last_hidden_state.shape, output_token.shape, wrapped_embed.shape)
+
+            grd_ind_1 = (output_token == self.seg_token_idx).nonzero(as_tuple=True)
+            grd_token_ind = grd_ind_1[0]
+
+            if len(grd_token_ind) == 0:
+                grd_token_ind = torch.tensor([len(output_token) - 1]).to(device)
+            if len(grd_token_ind) > 1:
+                grd_token_ind = grd_token_ind[:1]
+
+            # print(grd_ind_1, grd_token_ind, len(output_token))     #, output_grd_tokens.shape, output_text)
+
+            output_grd_tokens = hidden_states[grd_token_ind][-1][beam_indices[grd_token_ind]][-1]
+            output_grd_tokens = output_grd_tokens.mean(dim=0, keepdim=True)
+            grd_list.append(output_grd_tokens)
+
             output_text = output_text.split(self.end_sym)[0]
             output_text = output_text.replace('  ', ' ').replace(' .', '.').strip()
             output_text = recover_caption(output_text, assigned_ids[i].tolist())
             output_texts.append(output_text)
 
-        result = dict(pred_txt=output_texts)
+        output_grd = torch.stack(grd_list)
+        # aux_scores = self.aux_reg(output_grd.squeeze())
+        # print(output_grd.shape)
+        output_grd = output_grd.repeat(1, num_obj, 1)
+        # fused_feat = torch.cat([proj_object_embed, proj_object_img_embed, output_grd], dim=-1)
+        fused_feat = proj_object_embed + proj_object_img_embed + output_grd
+
+        pos_likelihood = self.position_head(fused_feat).squeeze(-1)
+        rotation_pred = self.rotation_head(fused_feat)
+        # pred_pos = scene_locs[:, :, :2] + rotation_pred[:, :, :2]     # [32, 256, 3]
+        # pred_pos = pred_pos.mean(dim=1)
+        # pred_rot = rotation_pred[:, :, 2:].mean(dim=1)
+
+        batch_indices = torch.arange(batch_size, device=scene_locs.device)
+        pred_indices = pos_likelihood.argmax(-1)
+        pred_pos = scene_locs[batch_indices, pred_indices, :3]
+        pred_rot = rotation_pred[batch_indices, pred_indices]
+        pred_rot[:, :2] = 0
+
+        aux_scores = torch.cat([pred_pos, pred_rot], dim=1)
+        # aux_scores = rotation_pred.mean(1)
+
+        result = dict(
+            pred_txt=output_texts,
+            pred_pos=aux_scores,
+        )
 
         return result
 

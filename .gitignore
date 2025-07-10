@@ -1,0 +1,7 @@
+annotations
+wandb
+outputs
+
+__pycache__
+
+weights

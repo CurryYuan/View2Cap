@@ -1,6 +1,7 @@
 import numpy as np
 import json
 import sys
+
 sys.path.append('.')
 import torch
 import random
@@ -10,7 +11,13 @@ import argparse
 from utils.box_utils import get_box3d_min_max, box3d_iou, construct_bbox_corners
 from prompts.prompts import grounding_location_prompt
 import string
-
+"""
+python preprocess/prepare_scanrefer_location_annos.py \
+    --segmentor mask3d \
+    --version "$version" \
+    --train_iou_thres 0.5 \
+    --max_obj_num 100
+"""
 
 parser = argparse.ArgumentParser()
 
@@ -23,6 +30,7 @@ args = parser.parse_args()
 segmentor = args.segmentor
 version = args.version
 
+
 def num_to_location_token(ori_num):
     ori_num = int(ori_num * 100) + 500
     if ori_num < 0:
@@ -31,10 +39,11 @@ def num_to_location_token(ori_num):
         ori_num = 999
     return f"<LOC{ori_num:03}>"
 
+
 for split in ["train", "val"]:
     count = [0] * args.max_obj_num
     annos = json.load(open(f"annotations/scanrefer/ScanRefer_filtered_{split}.json", "r"))
-    annos = sorted(annos, key=lambda p: f"{p['scene_id']}_{int(p['object_id']):03}")
+    annos = sorted(annos, key=lambda p: f"{p['scene_id']}_{int(p['object_id']):03}")     # [:200]
     new_annos = []
 
     instance_attribute_file = f"annotations/scannet_{segmentor}_{split}_attributes{version}.pt"
@@ -53,35 +62,25 @@ for split in ["train", "val"]:
         if desc[-1] in string.punctuation:
             desc = desc[:-1]
         prompt = random.choice(grounding_location_prompt).replace('<description>', desc)
-        
+
         if scene_id not in instance_attrs:
             continue
         scannet_locs = scannet_attrs[scene_id]["locs"]
         gt_locs = scannet_locs[obj_id].tolist()
-        
+
         gt_loc_tokens = [num_to_location_token(x) for x in gt_locs]
         caption = "<LOCATION> " + " ".join(gt_loc_tokens) + " </LOCATION>"
-        
+
         if split == "train":
-            new_annos.append({
-                "scene_id": scene_id,
-                "obj_id": obj_id,
-                "caption": caption,
-                "prompt": prompt
-            })
+            new_annos.append({"scene_id": scene_id, "obj_id": obj_id, "caption": caption, "prompt": prompt})
         else:
-            new_annos.append({
-                "scene_id": scene_id,
-                "obj_id": obj_id,
-                "ref_captions": [caption],
-                "prompt": prompt
-            })
+            new_annos.append({"scene_id": scene_id, "obj_id": obj_id, "ref_captions": [caption], "prompt": prompt})
 
     print(len(new_annos))
-    print(count)
+    # print(count)
     # print(maxiou_count / valid_count)
-    # print(f"max iou@0.25: {iou25_count / len(new_annos)}")
-    # print(f"max iou@0.5: {iou50_count / len(new_annos)}")
+    print(f"max iou@0.25: {iou25_count / len(new_annos)}")
+    print(f"max iou@0.5: {iou50_count / len(new_annos)}")
 
     with open(f"annotations/scanrefer_{segmentor}_{split}_location{version}.json", "w") as f:
         json.dump(new_annos, f, indent=4)

@@ -10,9 +10,9 @@ import glob
 import random
 from prompts.prompts import obj_caption_wid_prompt
 from torch.nn.utils.rnn import pad_sequence
+from scipy.spatial.transform import Rotation as R
 
 logger = logging.getLogger(__name__)
-
 
 
 class TrainDataset(BaseDataset):
@@ -33,7 +33,7 @@ class TrainDataset(BaseDataset):
             sample_ratio = ann_list[-1]
             if sample_ratio < 1:
                 self.anno = random.sample(self.anno, int(sample_ratio * len(self.anno)))
-        
+
         if feat_file in TrainDataset.cached_feats and img_feat_file in TrainDataset.cached_feats:
             self.scene_feats, self.scene_masks = TrainDataset.cached_feats[feat_file]
             self.scene_img_feats = TrainDataset.cached_feats[img_feat_file]
@@ -54,14 +54,13 @@ class TrainDataset(BaseDataset):
             TrainDataset.cached_feats[feat_file] = (self.scene_feats, self.scene_masks)
             TrainDataset.cached_feats[img_feat_file] = self.scene_img_feats
 
-
     def __len__(self):
         return len(self.anno)
 
     def __getitem__(self, index):
         if self.attributes is not None and self.anno[index]['scene_id'] not in self.attributes:
             # print(f"{self.anno[index]['scene_id']} not in attribute file!")
-            return self.__getitem__(random.randint(0, len(self.anno)-1))
+            return self.__getitem__(random.randint(0, len(self.anno) - 1))
         if "obj_id" in self.anno[index]:
             obj_id = int(self.anno[index]["obj_id"])
         else:
@@ -74,11 +73,22 @@ class TrainDataset(BaseDataset):
         scene_id, scene_feat, scene_img_feat, scene_mask, scene_locs, assigned_ids = self.get_anno(index)
         caption = update_caption(caption, assigned_ids)
         question = update_caption(question, assigned_ids)
-        return scene_feat, scene_img_feat, scene_mask, scene_locs, obj_id, assigned_ids, caption, question
+
+        if 'pos' in self.anno[index]:
+            # pos = torch.tensor(self.anno[index]['pos'][:3])
+            # quat_situation = self.anno[index]['pos'][3:]
+            # rot6D = np.array(R.from_quat(quat_situation).as_matrix())[:2].reshape(-1)
+            # pos = torch.cat((pos, torch.tensor(rot6D)))
+            pos = torch.tensor(self.anno[index]['pos'])
+        else:
+            # raise ValueError("pos not in anno")
+            pos = torch.zeros((1, 9))
+        return scene_feat, scene_img_feat, scene_mask, scene_locs, obj_id, assigned_ids, caption, question, pos
 
 
 def train_collate_fn(batch):
-    scene_feats, scene_img_feats, scene_masks, scene_locs, obj_ids, assigned_ids, captions, questions = zip(*batch)
+    scene_feats, scene_img_feats, scene_masks, scene_locs, obj_ids, assigned_ids, captions, questions, pos = zip(
+        *batch)
     batch_scene_feat = pad_sequence(scene_feats, batch_first=True)
     batch_scene_img_feat = pad_sequence(scene_img_feats, batch_first=True)
     batch_scene_mask = pad_sequence(scene_masks, batch_first=True).to(torch.bool)
@@ -88,16 +98,18 @@ def train_collate_fn(batch):
     # for i in range(batch_detach_mask.shape[0]):
     #     batch_detach_mask[i][:detach_masks[i].shape[0]] = detach_masks[i]
     obj_ids = torch.tensor(obj_ids)
+    pos = torch.stack(pos)
     return {
         "scene_feat": batch_scene_feat,
         "scene_img_feat": batch_scene_img_feat,
         "scene_locs": batch_scene_locs,
         "scene_mask": batch_scene_mask,
         "assigned_ids": batch_assigned_ids,
-        # "detach_mask": batch_detach_mask,
+     # "detach_mask": batch_detach_mask,
         "obj_ids": obj_ids,
         "answers": captions,
-        "questions": questions
-        # "ref_captions": ref_captions,
-        # "ids": index
+        "questions": questions,
+        "pos": pos
+     # "ref_captions": ref_captions,
+     # "ids": index
     }

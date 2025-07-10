@@ -1,22 +1,19 @@
 import json
 import torch
 import sys
+
 sys.path.append(".")
-from models.modeling_llama import LlamaForCausalLM
-from transformers import LlamaTokenizer, LlamaConfig
+# from models.modeling_llama import LlamaForCausalLM
+from transformers import LlamaTokenizer, LlamaConfig, LlamaForCausalLM
 from collections import defaultdict
 
 from tqdm import tqdm
-
 
 llama_model_path = "model/vicuna-7b-v0"
 
 print("Loading LLaMA")
 llama_tokenizer = LlamaTokenizer.from_pretrained(llama_model_path, use_fast=False)
-model = LlamaForCausalLM.from_pretrained(
-    llama_model_path,
-    torch_dtype=torch.float16
-)
+model = LlamaForCausalLM.from_pretrained(llama_model_path, torch_dtype=torch.float16)
 # model = model.to("cuda")
 # print(torch.cuda.memory_allocated(device="cuda:0")/1e9)
 # exit()

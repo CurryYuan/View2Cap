@@ -1,6 +1,7 @@
 import numpy as np
 import json
 import sys
+
 sys.path.append('.')
 import torch
 import random
@@ -10,7 +11,6 @@ import argparse
 from utils.box_utils import get_box3d_min_max, box3d_iou, construct_bbox_corners
 from prompts.prompts import grounding_prompt
 import string
-
 
 parser = argparse.ArgumentParser()
 
@@ -41,14 +41,14 @@ for split in ["train", "val"]:
     iou50_count = 0
     # maxiou_count = 0
     # valid_count = 0
-    for i, anno in tqdm(enumerate(annos)):
+    for i, anno in tqdm(enumerate(annos), total=len(annos)):
         scene_id = anno['scene_id']
         obj_id = int(anno['object_id'])
         desc = anno['description']
         if desc[-1] in string.punctuation:
             desc = desc[:-1]
         prompt = random.choice(grounding_prompt).replace('<description>', desc)
-        
+
         if segmentor == 'deva':
             if scene_id not in seg_gt_ious:
                 continue
@@ -100,8 +100,8 @@ for split in ["train", "val"]:
     print(len(new_annos))
     print(count)
     # print(maxiou_count / valid_count)
-    # print(f"max iou@0.25: {iou25_count / len(new_annos)}")
-    # print(f"max iou@0.5: {iou50_count / len(new_annos)}")
+    print(f"max iou@0.25: {iou25_count / len(new_annos)}")
+    print(f"max iou@0.5: {iou50_count / len(new_annos)}")
 
-    with open(f"annotations/scanrefer_{segmentor}_{split}{version}.json", "w") as f:
-        json.dump(new_annos, f, indent=4)
+    # with open(f"annotations/scanrefer_{segmentor}_{split}{version}.json", "w") as f:
+    #     json.dump(new_annos, f, indent=4)

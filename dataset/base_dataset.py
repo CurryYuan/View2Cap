@@ -30,7 +30,7 @@ class BaseDataset(Dataset):
 
     def __len__(self):
         raise NotImplementedError
-    
+
     def prepare_scene_features(self):
         if self.feats is not None:
             scan_ids = set('_'.join(x.split('_')[:2]) for x in self.feats.keys())
@@ -56,8 +56,10 @@ class BaseDataset(Dataset):
                 if self.feats is None or item_id not in self.feats:
                     # scene_feat.append(torch.randn((self.feat_dim)))
                     scene_feat.append(torch.zeros(self.feat_dim))
+                    # scene_mask.append(0)
                 else:
                     scene_feat.append(self.feats[item_id])
+                    # scene_mask.append(1)
                 if self.img_feats is None or item_id not in self.img_feats:
                     # scene_img_feat.append(torch.randn((self.img_feat_dim)))
                     scene_img_feat.append(torch.zeros(self.img_feat_dim))
@@ -86,22 +88,24 @@ class BaseDataset(Dataset):
         scene_feat = self.scene_feats[scene_id]
         if scene_feat.ndim == 1:
             scene_feat = scene_feat.unsqueeze(0)
-        scene_img_feat = self.scene_img_feats[scene_id] if self.scene_img_feats is not None else torch.zeros((scene_feat.shape[0], self.img_feat_dim))
-        scene_mask = self.scene_masks[scene_id] if self.scene_masks is not None else torch.ones(scene_feat.shape[0], dtype=torch.int)
+        scene_img_feat = self.scene_img_feats[scene_id] if self.scene_img_feats is not None else torch.zeros(
+            (scene_feat.shape[0], self.img_feat_dim))
+        scene_mask = self.scene_masks[scene_id] if self.scene_masks is not None else torch.ones(scene_feat.shape[0],
+                                                                                                dtype=torch.int)
         # assigned_ids = torch.randperm(self.max_obj_num)[:len(scene_locs)]
         # assigned_ids = torch.randperm(len(scene_locs))
-        assigned_ids = torch.randperm(self.max_obj_num) # !!!
+        assigned_ids = torch.randperm(self.max_obj_num)     # !!!
         return scene_id, scene_feat, scene_img_feat, scene_mask, scene_locs, assigned_ids
-    
+
 
 def update_caption(caption, assigned_ids):
     new_ids = {int(assigned_id): i for i, assigned_id in enumerate(assigned_ids)}
     id_format = "<OBJ\\d{3}>"
     for match in re.finditer(id_format, caption):
         idx = match.start()
-        old_id = int(caption[idx+4:idx+7])
+        old_id = int(caption[idx + 4:idx + 7])
         new_id = int(new_ids[old_id])
-        caption = caption[:idx+4] + f"{new_id:03}" + caption[idx+7:]
+        caption = caption[:idx + 4] + f"{new_id:03}" + caption[idx + 7:]
     return caption
 
 
@@ -109,12 +113,12 @@ def recover_caption(caption, assigned_ids):
     id_format = "<OBJ\\d{3}>"
     for match in re.finditer(id_format, caption):
         idx = match.start()
-        new_id = int(caption[idx+4:idx+7])
+        new_id = int(caption[idx + 4:idx + 7])
         try:
             old_id = int(assigned_ids[new_id])
         except:
-            old_id = random.randint(0, len(assigned_ids)-1)
-        caption = caption[:idx+4] + f"{old_id:03}" + caption[idx+7:]
+            old_id = random.randint(0, len(assigned_ids) - 1)
+        caption = caption[:idx + 4] + f"{old_id:03}" + caption[idx + 7:]
     return caption
 
 

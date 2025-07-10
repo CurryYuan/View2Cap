@@ -20,20 +20,15 @@ obj_caption_prompt = [
     "Produce a summary detailing the features of the object.",
     "Draft a description highlighting the qualities of the item.",
     "Create a report outlining the specifications of the object.",
-    "Formulate a narrative detailing the attributes of the item."                                                
+    "Formulate a narrative detailing the attributes of the item."
 ]
 
 obj_caption_wid_prompt = [
-    "Portray the visual characteristics of the <id>.",
-    "Detail the outward presentation of the <id>.",
-    "Provide a depiction of the <id>'s appearance.",
-    "Illustrate how the <id> looks.",
-    "Describe the visual aspects of the <id>.",
-    "Convey the physical attributes of the <id>.",
-    "Outline the external features of the <id>.",
-    "Render the appearance of the <id> in words.",
-    "Depict the outward form of the <id>.",
-    "Elaborate on the visual representation of the <id>."
+    "Portray the visual characteristics of the <id>.", "Detail the outward presentation of the <id>.",
+    "Provide a depiction of the <id>'s appearance.", "Illustrate how the <id> looks.",
+    "Describe the visual aspects of the <id>.", "Convey the physical attributes of the <id>.",
+    "Outline the external features of the <id>.", "Render the appearance of the <id> in words.",
+    "Depict the outward form of the <id>.", "Elaborate on the visual representation of the <id>."
 ]
 
 multi3dref_prompt = [
@@ -54,16 +49,11 @@ multi3dref_location_prompt = [
 ]
 
 region_caption_prompt = [
-    "Describe the area surrounding {}.",
-    "Provide a description of the locality around {}.",
-    "Characterize the zone centered on {}.",
-    "Depict the surroundings of {}.",
-    "Illustrate the region with {} at its core.",
-    "Give a portrayal of the area focused around {}.",
-    "Offer a depiction of the vicinity of {}.",
-    "Summarize the setting adjacent to {}.",
-    "Explain the environment encircling {}.",
-    "Detail the sector that encompasses {}."
+    "Describe the area surrounding {}.", "Provide a description of the locality around {}.",
+    "Characterize the zone centered on {}.", "Depict the surroundings of {}.",
+    "Illustrate the region with {} at its core.", "Give a portrayal of the area focused around {}.",
+    "Offer a depiction of the vicinity of {}.", "Summarize the setting adjacent to {}.",
+    "Explain the environment encircling {}.", "Detail the sector that encompasses {}."
 ]
 
 grounding_prompt = [
@@ -76,11 +66,19 @@ grounding_prompt = [
     "Share the ID of the object that best corresponds to the description \"<description>\".",
     "Identify the ID of the object that closely aligns with the description \"<description>\".",
     "What is the ID of the object that matches the description \"<description>\"?"
-    # "According to the given description, \"<description>,\" please provide the ID of the object that closely matches this description."
+     # "According to the given description, \"<description>,\" please provide the ID of the object that closely matches this description."
+]
+
+situation_grounding_prompt = [
+    "Share the location that is closest to your current situation \"<description>\".",
 ]
 
 grounding_location_prompt = [
     "According to the given description, \"<description>,\" please provide the location of the object that closely matches this description."
+]
+
+view2cap_prompt = [
+    "Describe the scene from the perspective of the camera.",
 ]
 
 scan2cap_prompt = [

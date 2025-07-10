@@ -2,8 +2,8 @@ import json
 import torch
 import sys
 
-from models.modeling_llama import LlamaForCausalLM
-from transformers import LlamaTokenizer, LlamaConfig
+# from models.modeling_llama import LlamaForCausalLM
+from transformers import LlamaTokenizer, LlamaConfig, LlamaForCausalLM
 from collections import defaultdict
 
 from tqdm import tqdm

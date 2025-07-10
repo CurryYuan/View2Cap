@@ -1,6 +1,9 @@
 import torch
 import random
 import sys
+import math
+from scipy.spatial.transform import Rotation as R
+
 sys.path.append('.')
 from utils.box_utils import box3d_iou, construct_bbox_corners
 import re
@@ -15,8 +18,10 @@ from utils.helper import clean_answer, answer_match, scanrefer_get_unique_multip
 # default_instance_attr_file = "annotations/scannet_mask3d_val_attributes.pt"
 default_instance_attr_file = 'annotations/scannet_deva_attributes_old.pt'
 
+
 def calc_scanrefer_score(preds, config=None):
-    instance_attribute_file = config.val_file_dict['scanrefer'][2] if config is not None else default_instance_attr_file
+    instance_attribute_file = config.val_file_dict['scanrefer'][
+        2] if config is not None else default_instance_attr_file
     scannet_attribute_file = "annotations/scannet_val_attributes.pt"
 
     instance_attrs = torch.load(instance_attribute_file, map_location='cpu')
@@ -53,7 +58,7 @@ def calc_scanrefer_score(preds, config=None):
         pred_id = 0
         for match in re.finditer(id_format, pred):
             idx = match.start()
-            cur_id = int(pred[idx+4:idx+7])
+            cur_id = int(pred[idx + 4:idx + 7])
             if cur_id < instance_num:
                 pred_id = cur_id
                 break
@@ -95,7 +100,7 @@ def calc_referit3d_score(preds, eval_name, config=None):
     easy_num, hard_num, dep_num, indep_num = 0, 0, 0, 0
     scannet_attribute_file = "annotations/scannet_val_attributes.pt"
     scannet_attrs = torch.load(scannet_attribute_file, map_location='cpu')
-    
+
     id_format = "<OBJ\\d{3}>"
 
     for i, output in enumerate(preds):
@@ -107,7 +112,7 @@ def calc_referit3d_score(preds, eval_name, config=None):
         pred_id = 0
         for match in re.finditer(id_format, pred):
             idx = match.start()
-            cur_id = int(pred[idx+4:idx+7])
+            cur_id = int(pred[idx + 4:idx + 7])
             if cur_id < gt_num:
                 pred_id = cur_id
                 break
@@ -142,7 +147,8 @@ def calc_referit3d_score(preds, eval_name, config=None):
 
 
 def calc_multi3dref_score(preds, config=None):
-    instance_attribute_file = config.val_file_dict['multi3dref'][2] if config is not None else default_instance_attr_file
+    instance_attribute_file = config.val_file_dict['multi3dref'][
+        2] if config is not None else default_instance_attr_file
     scannet_attribute_file = "annotations/scannet_val_attributes.pt"
 
     instance_attrs = torch.load(instance_attribute_file, map_location='cpu')
@@ -167,7 +173,7 @@ def calc_multi3dref_score(preds, config=None):
         pred_ids = []
         for match in re.finditer(id_format, pred_sentence):
             idx = match.start()
-            cur_id = int(pred_sentence[idx+4:idx+7])
+            cur_id = int(pred_sentence[idx + 4:idx + 7])
             if cur_id < instance_num:
                 pred_ids.append(cur_id)
         eval_type = pred['type_info']
@@ -245,14 +251,14 @@ def calc_scan2cap_score(preds, tokenizer, scorers, config=None):
         else:
             tmp_preds_iou50[key] = [{'caption': f"sos eos"}]
         tmp_targets[key] = [{'caption': caption} for caption in gt_dict[key]]
-    
+
     missing_keys = gt_dict.keys() - tmp_targets.keys()
 
     for missing_key in missing_keys:
         tmp_preds_iou25[missing_key] = [{'caption': "sos eos"}]
         tmp_preds_iou50[missing_key] = [{'caption': "sos eos"}]
         tmp_targets[missing_key] = [{'caption': caption} for caption in gt_dict[missing_key]]
-    
+
     tmp_preds_iou25 = tokenizer.tokenize(tmp_preds_iou25)
     tmp_preds_iou50 = tokenizer.tokenize(tmp_preds_iou50)
     tmp_targets = tokenizer.tokenize(tmp_targets)
@@ -312,13 +318,50 @@ def calc_scanqa_score(preds, tokenizer, scorers, config=None):
     return val_scores
 
 
-def calc_sqa3d_score(preds, tokenizer, scorers, config=None):
+def calc_caption_score(preds, tokenizer, scorers, eval_name, config=None):
+    val_scores = {}
+    tmp_preds = {}
+    tmp_targets = {}
+
+    print("Total samples:", len(preds))
+    for i, output in enumerate(preds):
+        item_id = f"{output['scene_id']}_{output['qid']}_{i}"
+        pred = output["pred"]
+        if len(pred) > 1:
+            if pred[-1] == '.':
+                pred = pred[:-1]
+            pred = pred[0].lower() + pred[1:]
+        pred = clean_answer(pred)
+        ref_captions = [clean_answer(caption) for caption in output['ref_captions']]
+        ref_captions = output['ref_captions']
+
+        tmp_preds[item_id] = [{'caption': pred}]
+        ref_captions = [p.replace("\n", " ").strip() for p in ref_captions]
+        tmp_targets[item_id] = [{'caption': caption} for caption in ref_captions]
+    tmp_preds = tokenizer.tokenize(tmp_preds)
+    tmp_targets = tokenizer.tokenize(tmp_targets)
+
+    for scorer, method in scorers:
+        score, scores = scorer.compute_score(tmp_targets, tmp_preds)
+        if type(method) == list:
+            for sc, scs, m in zip(score, scores, method):
+                val_scores[f"[{eval_name}] {m}"] = sc
+        else:
+            val_scores[f"[{eval_name}] {method}"] = score
+    return val_scores
+
+
+def calc_sqa3d_score(preds, tokenizer, scorers, eval_name, config=None):
     val_scores = {}
     tmp_preds = {}
     tmp_targets = {}
     metrics = {
-        'type0_count': 1e-10, 'type1_count': 1e-10, 'type2_count': 1e-10,
-        'type3_count': 1e-10, 'type4_count': 1e-10, 'type5_count': 1e-10,
+        'type0_count': 1e-10,
+        'type1_count': 1e-10,
+        'type2_count': 1e-10,
+        'type3_count': 1e-10,
+        'type4_count': 1e-10,
+        'type5_count': 1e-10,
     }
     em_overall = 0
     em_refined_overall = 0
@@ -344,22 +387,23 @@ def calc_sqa3d_score(preds, tokenizer, scorers, config=None):
         tmp_preds[item_id] = [{'caption': pred}]
         ref_captions = [p.replace("\n", " ").strip() for p in ref_captions]
         tmp_targets[item_id] = [{'caption': caption} for caption in ref_captions]
+
     tmp_preds = tokenizer.tokenize(tmp_preds)
     tmp_targets = tokenizer.tokenize(tmp_targets)
     em_overall = em_overall / len(preds)
     em_refined_overall = em_refined_overall / len(preds)
-    val_scores["[sqa3d] EM1"] = em_overall
-    val_scores["[sqa3d] EM1_refined"] = em_refined_overall
+    val_scores[f"[{eval_name}] EM1"] = em_overall
+    val_scores[f"[{eval_name}] EM1_refined"] = em_refined_overall
     for key in em_type.keys():
-        val_scores[f'[sqa3d] EM_type{key}'] = em_type[key] / metrics[f'type{key}_count']
-        val_scores[f'[sqa3d] EM_refined_type{key}'] = em_refined_type[key] / metrics[f'type{key}_count']
+        val_scores[f'[{eval_name}] EM_type{key}'] = em_type[key] / metrics[f'type{key}_count']
+        val_scores[f'[{eval_name}] EM_refined_type{key}'] = em_refined_type[key] / metrics[f'type{key}_count']
     for scorer, method in scorers:
         score, scores = scorer.compute_score(tmp_targets, tmp_preds)
         if type(method) == list:
             for sc, scs, m in zip(score, scores, method):
-                val_scores[f"[sqa3d] {m}"] = sc
+                val_scores[f"[{eval_name}] {m}"] = sc
         else:
-            val_scores[f"[sqa3d] {method}"] = score
+            val_scores[f"[{eval_name}] {method}"] = score
     return val_scores
 
 
@@ -368,13 +412,15 @@ def extract_locs(loc_str):
     locs = []
     for match in re.finditer(loc_format, loc_str):
         idx = match.start()
-        loc_idx = int(loc_str[idx+4:idx+7])
+        loc_idx = int(loc_str[idx + 4:idx + 7])
         loc_num = float(loc_idx - 500) / 100
         locs.append(loc_num)
     return locs
 
+
 def calc_scanrefer_location_score(preds, config=None):
-    instance_attribute_file = config.val_file_dict['scanrefer'][2] if config is not None else default_instance_attr_file
+    instance_attribute_file = config.val_file_dict['scanrefer'][
+        2] if config is not None else default_instance_attr_file
     scannet_attribute_file = "annotations/scannet_val_attributes.pt"
 
     instance_attrs = torch.load(instance_attribute_file, map_location='cpu')
@@ -443,7 +489,8 @@ def calc_scanrefer_location_score(preds, config=None):
 
 
 def calc_multi3dref_location_score(preds, config=None):
-    instance_attribute_file = config.val_file_dict['multi3dref'][2] if config is not None else default_instance_attr_file
+    instance_attribute_file = config.val_file_dict['multi3dref'][
+        2] if config is not None else default_instance_attr_file
     scannet_attribute_file = "annotations/scannet_val_attributes.pt"
 
     instance_attrs = torch.load(instance_attribute_file, map_location='cpu')
@@ -514,6 +561,127 @@ def calc_multi3dref_location_score(preds, config=None):
     return val_scores
 
 
+def pos_distance(pos1, pos2):
+    # ignore z
+    return math.sqrt(sum((pos1[:2] - pos2[:2])**2))
+
+
+def rot_distance_quat(rot1, rot2):
+    # only consider rotation along z-axis, range is -pi~pi
+    r1 = R.from_quat(rot1).as_rotvec()[-1]
+    r2 = R.from_quat(rot2).as_rotvec()[-1]
+    return min(abs(r1 - r2), 2 * math.pi - abs(r1 - r2)) / math.pi * 180
+
+
+def convert_6d_to_rotvec(rot):
+    # Assume rot is your 6D representation
+    # Reshape the 6D representation back to a rotation matrix
+    rotation_matrix = np.zeros((3, 3))
+    rotation_matrix[:2] = rot.reshape(2, 3)
+    rotation_matrix[2] = np.cross(rotation_matrix[0], rotation_matrix[1])
+    rotation_matrix[2] /= np.linalg.norm(rotation_matrix[2])
+    quat = R.from_matrix(rotation_matrix).as_quat()
+    rotvec = R.from_quat(quat).as_rotvec()[-1]
+
+    return rotvec
+
+
+def rot_distance_6d(rot1, rot2):
+    # Assume 6d_rot is your 6D representation
+    # Reshape the 6D representation back to a rotation matrix
+    r1 = convert_6d_to_rotvec(rot1)
+    r2 = convert_6d_to_rotvec(rot2)
+    return min(abs(r1 - r2), 2 * math.pi - abs(r1 - r2)) / math.pi * 180
+
+
+def calc_situation_score(preds, tokenizer, scorers, eval_name, config=None):
+    # instance_attribute_file = config.val_file_dict['scanrefer'][
+    #     2] if config is not None else default_instance_attr_file
+    # scannet_attribute_file = "annotations/scannet_val_attributes.pt"
+
+    # instance_attrs = torch.load(instance_attribute_file, map_location='cpu')
+    # scannet_attrs = torch.load(scannet_attribute_file, map_location='cpu')
+
+    # unique_multiple_lookup = scanrefer_get_unique_multiple_lookup()
+
+    dist05_acc = 0
+    dist10_acc = 0
+    cnt_rot_15 = 0
+    cnt_rot_30 = 0
+
+    id_format = "<OBJ\\d{3}>"
+
+    for i, output in enumerate(preds):
+        #     scene_id = output["scene_id"]
+        #     obj_id = output["gt_id"]
+        #     instance_locs = instance_attrs[scene_id]["locs"]
+        #     scannet_locs = scannet_attrs[scene_id]["locs"]
+        # unique_multiple = unique_multiple_lookup[scene_id][str(obj_id)]
+        # if unique_multiple == 0:
+        #     unique_all += 1
+        # else:
+        #     multiple_all += 1
+        output["pred"] = output["pred"].split('Answer: ')[-1]
+
+        pred = np.array(output["pred_pos"]).reshape(-1)
+        gt = np.array(output["gt_pos"])
+        # pred_locs = extract_locs(pred.split('</LOCATION>')[0])
+        # gt_locs = extract_locs(output['ref_captions'][0].split('</LOCATION>')[0])
+
+        # print(pred_locs, gt_locs)
+
+        # instance_num = instance_locs.shape[0]
+        # pred_id = 0
+        # for match in re.finditer(id_format, pred):
+        #     idx = match.start()
+        #     cur_id = int(pred[idx + 4:idx + 7])
+        #     if cur_id < instance_num:
+        #         pred_id = cur_id
+        #         break
+
+        # pred_locs = instance_locs[pred_id].tolist()
+        # gt_locs = scannet_locs[obj_id].tolist()
+        # pred_corners = construct_bbox_corners(pred_locs[:3], pred_locs[3:])
+        # gt_corners = construct_bbox_corners(gt_locs[:3], gt_locs[3:])
+
+        # dist = np.linalg.norm(np.array(pred[:2]) - np.array(gt[:2]))
+        # iou = box3d_iou(pred_corners, gt_corners)
+        posdiff = pos_distance(gt, pred)
+        rotdiff = rot_distance_quat(gt[3:], pred[3:])
+        # gt_r = np.array(R.from_quat(gt[3:]).as_matrix())[:2].reshape(-1)
+        # rotdiff = rot_distance_6d(gt_r, pred[2:])
+        if posdiff <= 0.5:
+            dist05_acc += 1
+            # if unique_multiple == 0:
+            #     unique_iou25_acc += 1
+            # else:
+            #     multiple_iou25_acc += 1
+            # iou25_acc_list[scannet_locs.shape[0]] += 1
+        if posdiff <= 1.0:
+            dist10_acc += 1
+            # if unique_multiple == 0:
+            #     unique_iou50_acc += 1
+            # else:
+            #     multiple_iou50_acc += 1
+            # iou50_acc_list[scannet_locs.shape[0]] += 1
+        # count_list[scannet_locs.shape[0]] += 1
+        if rotdiff <= 15:
+            cnt_rot_15 += 1
+        if rotdiff <= 30:
+            cnt_rot_30 += 1
+
+    val_scores = calc_sqa3d_score(preds, tokenizer, scorers, 'sqa3d', config)
+
+    val_scores.update({
+        '[sqa3d_g] Acc@0.5m': float(dist05_acc) / len(preds),
+        '[sqa3d_g] Acc@1.0m': float(dist10_acc) / len(preds),
+        '[sqa3d_g] Acc@15d': float(cnt_rot_15) / len(preds),
+        '[sqa3d_g] Acc@30d': float(cnt_rot_30) / len(preds),
+    })
+
+    return val_scores
+
+
 if __name__ == '__main__':
     # from pycocoevalcap.bleu.bleu import Bleu
     # from pycocoevalcap.meteor.meteor import Meteor
@@ -537,6 +705,9 @@ if __name__ == '__main__':
     # val_scores = calc_scanrefer_location_score(save_preds)
     # print(json.dumps(val_scores, indent=4))
 
-    save_preds = json.load(open('/mnt/petrelfs/huanghaifeng/share_hw/Chat-3D-v2/outputs/20240806_182802_lr5e-6_ep3_scanrefer_location#scan2cap_location#scanqa#sqa3d#multi3dref_location__scanrefer_location#multi3dref_location#scan2cap_location#scanqa#sqa3d__use_location_token/preds_epoch1_step2586_multi3dref_location.json'))
+    save_preds = json.load(
+        open(
+            '/mnt/petrelfs/huanghaifeng/share_hw/Chat-3D-v2/outputs/20240806_182802_lr5e-6_ep3_scanrefer_location#scan2cap_location#scanqa#sqa3d#multi3dref_location__scanrefer_location#multi3dref_location#scan2cap_location#scanqa#sqa3d__use_location_token/preds_epoch1_step2586_multi3dref_location.json'
+        ))
     val_scores = calc_multi3dref_location_score(save_preds)
     print(json.dumps(val_scores, indent=4))

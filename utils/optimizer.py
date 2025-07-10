@@ -6,6 +6,7 @@ import torch
 from torch import optim as optim
 from utils.distributed import is_main_process
 import logging
+
 logger = logging.getLogger(__name__)
 try:
     from apex.optimizers import FusedNovoGrad, FusedAdam, FusedLAMB, FusedSGD
@@ -18,7 +19,7 @@ def add_weight_decay(model, weight_decay, no_decay_list=(), filter_bias_and_bn=T
     named_param_tuples = []
     for name, param in model.named_parameters():
         if not param.requires_grad:
-            continue  # frozen weights
+            continue     # frozen weights
         if filter_bias_and_bn and (len(param.shape) == 1 or name.endswith(".bias")):
             named_param_tuples.append([name, param, 0])
         elif name in no_decay_list:
@@ -45,12 +46,10 @@ def add_different_lr(named_param_tuples_or_model, diff_lr_names, diff_lrs, diff_
 
     if diff_lrs is None:
         for name, p, wd in named_param_tuples_or_model:
-            named_param_tuples_with_lr.append(
-                [name, p, wd, default_lr]
-            )
-        if is_main_process():
-            for name, _, wd, diff_lr in named_param_tuples_with_lr:
-                logger.info(f"param {name}: wd: {wd}, lr: {diff_lr}")
+            named_param_tuples_with_lr.append([name, p, wd, default_lr])
+        # if is_main_process():
+        #     for name, _, wd, diff_lr in named_param_tuples_with_lr:
+        #         logger.info(f"param {name}: wd: {wd}, lr: {diff_lr}")
         return named_param_tuples_with_lr
 
     if not isinstance(diff_lrs, list):
@@ -64,18 +63,14 @@ def add_different_lr(named_param_tuples_or_model, diff_lr_names, diff_lrs, diff_
             if re.search(diff_name, name) is not None:
                 # logger.info(f"param {name} use different_lr: {diff_lr}")
                 use_diff_lr = True
-                named_param_tuples_with_lr.append(
-                    [name, p, diff_wd, diff_lr]
-                )
+                named_param_tuples_with_lr.append([name, p, diff_wd, diff_lr])
                 break
         if not use_diff_lr:
-            named_param_tuples_with_lr.append(
-                [name, p, wd, default_lr]
-            )
+            named_param_tuples_with_lr.append([name, p, wd, default_lr])
 
-    if is_main_process():
-        for name, _, wd, diff_lr in named_param_tuples_with_lr:
-            logger.info(f"param {name}: wd: {wd}, lr: {diff_lr}")
+    # if is_main_process():
+    # for name, _, wd, diff_lr in named_param_tuples_with_lr:
+    # logger.info(f"param {name}: wd: {wd}, lr: {diff_lr}")
 
     return named_param_tuples_with_lr
 
@@ -93,12 +88,8 @@ def create_optimizer_params_group(named_param_tuples_with_lr):
     optimizer_params_group = []
     for wd, lr_groups in group.items():
         for lr, p in lr_groups.items():
-            optimizer_params_group.append(dict(
-                params=p,
-                weight_decay=wd,
-                lr=lr
-            ))
-            logger.info(f"optimizer -- lr={lr} wd={wd} len(p)={len(p)}")
+            optimizer_params_group.append(dict(params=p, weight_decay=wd, lr=lr))
+            # logger.info(f"optimizer -- lr={lr} wd={wd} len(p)={len(p)}")
     return optimizer_params_group
 
 
@@ -121,10 +112,8 @@ def create_optimizer(args, model, global_config, filter_bias_and_bn=True):
     no_decay = {}
     if hasattr(model, 'no_weight_decay'):
         no_decay = model.no_weight_decay()
-    named_param_tuples = add_weight_decay(
-        model, weight_decay, no_decay, filter_bias_and_bn)
-    named_param_tuples = add_different_lr(
-        named_param_tuples, diff_lr_module_names, diff_lr, diff_wd, args.lr)
+    named_param_tuples = add_weight_decay(model, weight_decay, no_decay, filter_bias_and_bn)
+    named_param_tuples = add_different_lr(named_param_tuples, diff_lr_module_names, diff_lr, diff_wd, args.lr)
     parameters = create_optimizer_params_group(named_param_tuples)
 
     if 'fused' in opt_lower:

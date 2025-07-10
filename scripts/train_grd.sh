@@ -5,7 +5,7 @@ echo "PYTHONPATH: ${PYTHONPATH}"
 export MASTER_PORT=$((54000 + $RANDOM % 10000))
 export MASTER_ADDR=localhost
 
-epoch=3
+epoch=20
 batch_size=32
 lr=5e-6
 train_emb=True
@@ -19,18 +19,26 @@ different_lr=False
 max_obj_num=100
 lora_r=16
 lora_alpha=16
-add_pos_emb=False
+add_pos_emb=True
 feat_fusion=False
 fuse_with_id=False
 config=""
 max_grad_norm=0.01
 seed=42
 use_location_token=False
+max_txt_len=64
 
-llama_model_path="llm/vicuna-7b-v1.5"
+llama_model_path="/data2/huggingface/vicuna-7b-v1.5"
 
-train_tag="scanrefer#obj_align#nr3d_caption#scan2cap#scanqa#sqa3d#multi3dref"
-val_tag="scanqa#scan2cap#sqa3d#multi3dref"
+# train_tag="scanrefer#scan2cap#scanqa#sqa3d#multi3dref#nr3d_caption#obj_align#view2cap"
+# train_tag="view2cap_d#view2cap_s"
+train_tag="sqa3d_g"
+# val_tag="scanrefer#scan2cap#scanqa#sqa3d#multi3dref#view2cap"
+# val_tag="view2cap_d#view2cap_s"
+val_tag="sqa3d_g"
+
+# train_tag="sqa3d_g#scanrefer_location#scan2cap_location"
+# val_tag="sqa3d_g#scanrefer_location#scan2cap_location"
 
 evaluate=False
 debug=False
@@ -38,29 +46,32 @@ if [ $debug = "True" ]; then
     enable_wandb=False
     gpu_num=1
     do_save=False
-    other_info="debug"
+    tag="debug"
 else
-    enable_wandb=False
-    gpu_num=4
+    enable_wandb=True
+    gpu_num=6
     do_save=True
-    other_info="chatscene"
+    tag="train_sqa3d_g"
 fi
 
-tag="${train_tag}__${val_tag}__${other_info}"
+pretrained_path="outputs/train_view2cap_viewqa__20250318_192103/ckpt_02_2799.pth"   # "weights/ckpt_01_3446.pth"
 
-pretrained_path=""
-
-OUTPUT_DIR=outputs/"$(date +"%Y%m%d_%H%M%S")"_lr"$lr"_ep"$epoch"_"$tag"
+OUTPUT_DIR=outputs/"$tag"_"$(date +"%Y%m%d_%H%M%S")"
 mkdir -p ${OUTPUT_DIR}
 
-srun --partition=mozi-S1 --gres=gpu:${gpu_num} --ntasks-per-node=${gpu_num} --kill-on-bad-exit --quotatype=reserved \
-python tasks/train.py \
+# srun --partition=mozi-S1 --gres=gpu:${gpu_num} --ntasks-per-node=${gpu_num} --kill-on-bad-exit --quotatype=reserved \
+CUDA_VISIBLE_DEVICES=0,1,2,3,4,5 torchrun  --nnodes=1 --nproc_per_node=${gpu_num} \
+          --rdzv_endpoint=${MASTER_ADDR}:${MASTER_PORT} \
+          --rdzv_backend=c10d \
+    tasks/train.py \
     "$(dirname $0)/${config}config.py" \
     output_dir "$OUTPUT_DIR" \
     scheduler.epochs "$epoch" \
     optimizer.lr "$lr" \
+    model.model_cls "Chat3D_G" \
     model.add_scene_token "$add_scene_token" \
     model.add_img_token "$add_img_token" \
+    model.max_txt_len "$max_txt_len" \
     pretrained_path "$pretrained_path" \
     evaluate "$evaluate" \
     wandb.enable "$enable_wandb" \

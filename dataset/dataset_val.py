@@ -60,7 +60,7 @@ class ValDataset(BaseDataset):
         if 'sqa_type' in self.anno[index]:
             type_info = self.anno[index]['sqa_type']
         elif 'eval_type' in self.anno[index]:
-            type_info = self.anno[index]['eval_type'] 
+            type_info = self.anno[index]['eval_type']
         elif 'type_info' in self.anno[index]:
             type_info = self.anno[index]['type_info']
         if 'prompt' not in self.anno[index]:
@@ -69,11 +69,17 @@ class ValDataset(BaseDataset):
             prompt = self.anno[index]["prompt"]
         ref_captions = self.anno[index]["ref_captions"].copy() if "ref_captions" in self.anno[index] else []
         qid = self.anno[index]["qid"] if "qid" in self.anno[index] else 0
-        return scene_feat, scene_img_feat, scene_mask, scene_locs, obj_id, assigned_ids, prompt, ref_captions, scene_id, qid, pred_id, type_info
+
+        if 'pos' in self.anno[index]:
+            pos = torch.tensor(self.anno[index]['pos'])
+        else:
+            pos = torch.zeros((1, 7))
+        return scene_feat, scene_img_feat, scene_mask, scene_locs, obj_id, assigned_ids, prompt, ref_captions, scene_id, qid, pred_id, type_info, pos
 
 
 def val_collate_fn(batch):
-    scene_feats, scene_img_feats, scene_masks, scene_locs, obj_ids, assigned_ids, prompts, ref_captions, scene_ids, qids, pred_ids, type_infos = zip(*batch)
+    scene_feats, scene_img_feats, scene_masks, scene_locs, obj_ids, assigned_ids, prompts, ref_captions, scene_ids, qids, pred_ids, type_infos, pos = zip(
+        *batch)
     batch_scene_feat = pad_sequence(scene_feats, batch_first=True)
     batch_scene_img_feat = pad_sequence(scene_img_feats, batch_first=True)
     batch_scene_mask = pad_sequence(scene_masks, batch_first=True).to(torch.bool)
@@ -81,6 +87,7 @@ def val_collate_fn(batch):
     batch_assigned_ids = pad_sequence(assigned_ids, batch_first=True)
     obj_ids = torch.tensor(obj_ids)
     pred_ids = torch.tensor(pred_ids)
+    pos = torch.stack(pos)
     return {
         "scene_feat": batch_scene_feat,
         "scene_img_feat": batch_scene_img_feat,
@@ -93,7 +100,7 @@ def val_collate_fn(batch):
         "scene_id": scene_ids,
         "qid": qids,
         "pred_ids": pred_ids,
-        "type_infos": type_infos
-        # "ids": index
+        "type_infos": type_infos,
+        "pos": pos
+     # "ids": index
     }
-

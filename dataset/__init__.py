@@ -6,8 +6,11 @@ from torchvision.transforms import InterpolationMode
 from dataset.dataloader import MetaLoader
 from dataset.dataset_train import TrainDataset
 from dataset.dataset_val import ValDataset
+from dataset.dataset_region_train import TrainDatasetRegion
+from dataset.dataset_region_val import ValDatasetRegion
 
 import logging
+
 logger = logging.getLogger(__name__)
 
 
@@ -15,16 +18,18 @@ def create_dataset(config):
     if config.evaluate:
         train_datasets = []
     else:
-        train_files = []
+        train_datasets = []
+        datasets = []
         for train_name in config.train_tag.split('#'):
             if train_name not in config.train_file_dict:
                 raise NotImplementedError
-            train_files.append(config.train_file_dict[train_name])
-        
-        train_datasets = []
-        datasets = []
-        for train_file in train_files:
-            datasets.append(TrainDataset(ann_list=train_file, config=config))
+            train_file = config.train_file_dict[train_name]
+
+            if train_name in ['view2cap_s', 'view2cap_d', 'viewqa_s']:
+                datasets.append(TrainDatasetRegion(ann_list=train_file, config=config))
+            else:
+                datasets.append(TrainDataset(ann_list=train_file, config=config))
+
         dataset = ConcatDataset(datasets)
         train_datasets.append(dataset)
 
@@ -40,7 +45,10 @@ def create_dataset(config):
         if type(v[0]) != list:
             v = [v]
         for val_file in v:
-            datasets.append(ValDataset(ann_list=val_file, dataset_name=k, config=config))
+            if k in ['view2cap_s', 'view2cap_d', 'viewqa_s']:
+                datasets.append(ValDatasetRegion(ann_list=val_file, dataset_name=k, config=config))
+            else:
+                datasets.append(ValDataset(ann_list=val_file, dataset_name=k, config=config))
         dataset = ConcatDataset(datasets)
         val_datasets.append(dataset)
 
@@ -50,18 +58,18 @@ def create_dataset(config):
 def create_sampler(datasets, shuffles, num_tasks, global_rank):
     samplers = []
     for dataset, shuffle in zip(datasets, shuffles):
-        sampler = torch.utils.data.DistributedSampler(
-            dataset, num_replicas=num_tasks, rank=global_rank, shuffle=shuffle
-        )
+        sampler = torch.utils.data.DistributedSampler(dataset,
+                                                      num_replicas=num_tasks,
+                                                      rank=global_rank,
+                                                      shuffle=shuffle)
         samplers.append(sampler)
     return samplers
 
 
 def create_loader(datasets, samplers, batch_size, num_workers, is_trains, collate_fns):
     loaders = []
-    for dataset, sampler, bs, n_worker, is_train, collate_fn in zip(
-        datasets, samplers, batch_size, num_workers, is_trains, collate_fns
-    ):
+    for dataset, sampler, bs, n_worker, is_train, collate_fn in zip(datasets, samplers, batch_size, num_workers,
+                                                                    is_trains, collate_fns):
         if is_train:
             shuffle = sampler is None
             drop_last = True

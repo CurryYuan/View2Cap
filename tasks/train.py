@@ -13,12 +13,15 @@ from dataset import MetaLoader, create_dataset, create_loader, create_sampler
 from dataset.dataset_train import train_collate_fn
 from dataset.dataset_val import val_collate_fn
 from models.chat3d import Chat3D
+from models.chat3d_g import Chat3D_G
 from tasks.shared_utils import get_media_types, setup_model
 from utils.basic_utils import (MetricLogger, SmoothedValue, setup_seed)
 from utils.config_utils import setup_main
 from utils.distributed import get_rank, get_world_size, is_main_process
 from utils.logger import log_dict_to_wandb, setup_wandb
-from utils.eval import calc_scanrefer_score, clean_answer, calc_scan2cap_score, calc_scanqa_score, calc_sqa3d_score, calc_multi3dref_score, calc_referit3d_score, calc_scanrefer_location_score, calc_multi3dref_location_score
+from utils.eval import calc_scanrefer_score, clean_answer, calc_scan2cap_score, calc_scanqa_score, calc_sqa3d_score,\
+     calc_multi3dref_score, calc_referit3d_score, calc_scanrefer_location_score, calc_multi3dref_location_score,\
+        calc_sqa3d_score, calc_situation_score, calc_caption_score
 
 from pycocoevalcap.bleu.bleu import Bleu
 from pycocoevalcap.meteor.meteor import Meteor
@@ -26,7 +29,6 @@ from pycocoevalcap.rouge.rouge import Rouge
 from pycocoevalcap.cider.cider import Cider
 # from pycocoevalcap.spice.spice import Spice
 from pycocoevalcap.tokenizer.ptbtokenizer import PTBTokenizer
-
 
 import numpy as np
 from tqdm import tqdm
@@ -43,33 +45,31 @@ scorers = [
     (Meteor(), "METEOR"),
     (Rouge(), "ROUGE_L"),
     (Cider(), "CIDEr"),
-    # (Spice(), "SPICE")
+     # (Spice(), "SPICE")
 ]
 
 max_global_step = 200000000
 
 
-def train(
-    model,
-    model_without_ddp,
-    train_loaders,
-    val_loaders,
-    optimizer,
-    epoch,
-    global_step,
-    device,
-    scheduler,
-    scaler,
-    config,
-    do_eval=True
-):
+def train(model,
+          model_without_ddp,
+          train_loaders,
+          val_loaders,
+          optimizer,
+          epoch,
+          global_step,
+          device,
+          scheduler,
+          scaler,
+          config,
+          do_eval=True):
     model.train()
     model_without_ddp.llama_model.config.use_cache = False
 
     metric_logger = MetricLogger(delimiter="  ")
     eval_metric_logger = MetricLogger(delimiter="  ")
     metric_logger.add_meter("lr", SmoothedValue(window=1, fmt="{value:.6f}"))
-    loss_names = ["loss", "obj_norm", "obj_img_norm", "objid_norm", "scene_norm"]
+    loss_names = ["loss", "obj_norm", "obj_img_norm", "objid_norm", "scene_norm", "pos_loss", "rot_loss"]
     media_types = get_media_types(train_loaders)
 
     # tot_param = sum(p.numel() for p in model_without_ddp.parameters())
@@ -79,9 +79,7 @@ def train(
     # exit()
 
     for name in loss_names:
-        metric_logger.add_meter(
-            f"{name}", SmoothedValue(window=1, fmt="{value:.6f}")
-        )
+        metric_logger.add_meter(f"{name}", SmoothedValue(window=1, fmt="{value:.6f}"))
 
     header = f"Train Epoch: [{epoch}]"
     log_freq = config.log_freq
@@ -92,7 +90,7 @@ def train(
     train_loader = MetaLoader(name2loader=dict(list(zip(media_types, train_loaders))))
 
     accum_iter = 1
-    eval_freq = 2000  # len(train_loader)
+    eval_freq = 2000     # len(train_loader)
 
     optimizer.zero_grad()
     iterator = metric_logger.log_every(train_loader, log_freq, header)
@@ -102,7 +100,7 @@ def train(
                 batch[k] = batch[k].to(device)
         loss_dict = model(**batch)
         loss = loss_dict["loss"] / accum_iter
-        
+
         scaler.scale(loss).backward()
 
         if ((i + 1) % accum_iter == 0) or (i + 1 == len(train_loader)):
@@ -129,7 +127,8 @@ def train(
 
         global_step += 1
 
-        if do_eval and ((i+1) % eval_freq == 0 and (len(train_loader) - i >= eval_freq) or i == len(train_loader) - 1):
+        if do_eval and ((i + 1) % eval_freq == 0 and
+                        (len(train_loader) - i >= eval_freq) or i == len(train_loader) - 1):
             val_metrics = evaluate_all(model, model_without_ddp, val_loaders, epoch, global_step, device, config)
             if is_main_process():
                 for k, v in val_metrics.items():
@@ -139,11 +138,9 @@ def train(
             if is_main_process() and config.wandb.enable:
                 logs = eval_metric_logger.get_avg_dict()
                 log_dict_to_wandb(logs, step=global_step, prefix="val/")
-            
+
             if is_main_process():
-                param_grad_dic = {
-                    k: v.requires_grad for (k, v) in model_without_ddp.named_parameters()
-                }
+                param_grad_dic = {k: v.requires_grad for (k, v) in model_without_ddp.named_parameters()}
                 state_dict = model_without_ddp.state_dict()
                 for k in list(state_dict.keys()):
                     if k in param_grad_dic.keys() and not param_grad_dic[k]:
@@ -151,9 +148,9 @@ def train(
                         del state_dict[k]
                 save_obj = {
                     "model": state_dict,
-                    # "optimizer": optimizer.state_dict(),
-                    # "scheduler": scheduler.state_dict(),
-                    # "scaler": scaler.state_dict(),
+                # "optimizer": optimizer.state_dict(),
+                # "scheduler": scheduler.state_dict(),
+                # "scaler": scaler.state_dict(),
                     "config": config,
                     "epoch": epoch,
                     "global_step": global_step,
@@ -169,15 +166,7 @@ def train(
     return global_step
 
 
-def evaluate_all(
-    model,
-    model_without_ddp,
-    val_loaders,
-    epoch,
-    global_step,
-    device,
-    config
-):
+def evaluate_all(model, model_without_ddp, val_loaders, epoch, global_step, device, config):
     logger.info("Start evaluating...")
     model.eval()
     model_without_ddp.llama_model.config.use_cache = True
@@ -185,24 +174,17 @@ def evaluate_all(
     for val_loader in val_loaders:
         new_val_scores = evaluate(model, val_loader, epoch, global_step, device, config)
         val_scores = {**val_scores, **new_val_scores}
-    
+
     logger.info(f"[epoch={epoch}, global steps={global_step}] Val Results:")
     for k, v in val_scores.items():
         logger.info(f"{k}: {v}")
-    
+
     model.train()
     model.module.llama_model.config.use_cache = False
     return val_scores
 
 
-def evaluate(
-    model,
-    val_loader,
-    epoch,
-    global_step,
-    device,
-    config
-):
+def evaluate(model, val_loader, epoch, global_step, device, config):
     eval_name = val_loader.dataset.datasets[0].dataset_name
     logger.info(f"Evaluating {eval_name}...")
     if config.distributed:
@@ -230,7 +212,7 @@ def evaluate(
             #     tmp_target = ['\n'.join(p) for p in target]
             #     if i % sample_freq == 0:
             #         logger.info(f"\n[Prompt]\n{prompt[0]}\n[Pred]\n{tmp_pred[0]}\n[Target(s)]\n{tmp_target[0]}")
-            batch_size = len(pred)
+            batch_size = len(pred['pred_txt'])
             for bi in range(batch_size):
                 scene_id = batch["scene_id"][bi]
                 obj_id = int(batch["obj_ids"][bi])
@@ -238,8 +220,9 @@ def evaluate(
                 prompt = batch["custom_prompt"][bi]
                 pred_id = int(batch['pred_ids'][bi])
                 type_info = batch['type_infos'][bi]
-                tmp_pred = pred[bi]
-                save_preds.append({
+                tmp_pred = pred['pred_txt'][bi]
+
+                save_pred = {
                     "scene_id": scene_id,
                     "gt_id": obj_id,
                     'pred_id': pred_id,
@@ -248,27 +231,41 @@ def evaluate(
                     "pred": tmp_pred,
                     "ref_captions": batch["ref_captions"][bi],
                     "type_info": type_info
-                })
+                }
+
+                if 'pred_pos' in pred:
+                    pred_pos = pred['pred_pos'][bi]
+                    gt_pos = batch['pos'][bi]
+                    save_pred.update({
+                        "pred_pos": pred_pos.tolist(),
+                        "gt_pos": gt_pos.tolist(),
+                    })
+
+                save_preds.append(save_pred)
             # if i % sample_freq == 0:
             #     print(save_preds[-1])
+        # break
 
     if len(save_preds) > 0:
         save_preds = sorted(save_preds, key=lambda x: f"{x['scene_id']}_{x['gt_id']:03}_{x['qid']}")
-        with open(os.path.join(config.output_dir, f"preds_epoch{epoch}_step{global_step}_rank{get_rank()}_{eval_name}.json"),
-                  "w") as f:
+        with open(
+                os.path.join(config.output_dir,
+                             f"preds_epoch{epoch}_step{global_step}_rank{get_rank()}_{eval_name}.json"), "w") as f:
             json.dump(save_preds, f, indent=4)
 
     dist.barrier()
     if is_main_process():
         save_preds = []
         for rank in range(config.gpu_num):
-            path = os.path.join(config.output_dir, f"preds_epoch{epoch}_step{global_step}_rank{rank}_{eval_name}.json")
+            path = os.path.join(config.output_dir,
+                                f"preds_epoch{epoch}_step{global_step}_rank{rank}_{eval_name}.json")
             if os.path.exists(path):
                 preds = json.load(open(path, "r"))
                 save_preds += preds
                 os.remove(path)
         save_preds = sorted(save_preds, key=lambda x: f"{x['scene_id']}_{x['gt_id']:03}_{x['qid']}")
-        with open(os.path.join(config.output_dir, f"preds_epoch{epoch}_step{global_step}_{eval_name}.json"), "w") as f:
+        with open(os.path.join(config.output_dir, f"preds_epoch{epoch}_step{global_step}_{eval_name}.json"),
+                  "w") as f:
             json.dump(save_preds, f, indent=4)
 
     val_scores = {}
@@ -279,8 +276,8 @@ def evaluate(
             val_scores = calc_scanrefer_score(save_preds, config)
         elif eval_name in ["scan2cap", "scan2cap_location"]:
             val_scores = calc_scan2cap_score(save_preds, tokenizer, scorers, config)
-        elif eval_name in ["sqa3d", "sqa3d_val"]:
-            val_scores = calc_sqa3d_score(save_preds, tokenizer, scorers, config)
+        elif eval_name in ["sqa3d", "sqa3d_val", "viewqa_s", "viewqa_m"]:
+            val_scores = calc_sqa3d_score(save_preds, tokenizer, scorers, eval_name, config)
         elif eval_name == 'multi3dref':
             val_scores = calc_multi3dref_score(save_preds, config)
         elif eval_name in ['nr3d', 'sr3d']:
@@ -288,36 +285,40 @@ def evaluate(
         elif eval_name == "scanrefer_location":
             val_scores = calc_scanrefer_location_score(save_preds, config)
         elif eval_name == "multi3dref_location":
-            val_score = calc_multi3dref_location_score(save_preds, config)
+            val_scores = calc_multi3dref_location_score(save_preds, config)
         elif eval_name in ["scanrefer_test", "scan2cap_test"]:
             pass
+        elif eval_name in ["sqa3d_g"]:
+            val_scores = calc_situation_score(save_preds, tokenizer, scorers, eval_name, config)
+        elif eval_name in ["view2cap_s", "view2cap_d"]:
+            val_scores = calc_caption_score(save_preds, tokenizer, scorers, eval_name, config)
         # else:
         #     raise NotImplementedError
-            # tmp_preds = {}
-            # tmp_targets = {}
-            # acc = 0
-            # print("Total samples:", len(save_preds))
-            # for i, output in enumerate(save_preds):
-            #     item_id = f"{output['scene_id']}_{output['gt_id']}_{output['qid']}_{i}"
-            #     pred = output["pred"]
-            #     pred = clean_answer(pred)
-            #     ref_captions = [clean_answer(caption) for caption in output['ref_captions']]
-            #     if pred in ref_captions:
-            #         acc += 1
-            #     tmp_preds[item_id] = [{'caption': pred}]
-            #     ref_captions = [p.replace("\n", " ").strip() for p in ref_captions]
-            #     tmp_targets[item_id] = [{'caption': caption} for caption in ref_captions]
-            # tmp_preds = tokenizer.tokenize(tmp_preds)
-            # tmp_targets = tokenizer.tokenize(tmp_targets)
-            # acc = acc / len(save_preds)
-            # val_scores[f"[{eval_name}] Acc"] = acc
-            # for scorer, method in scorers:
-            #     score, scores = scorer.compute_score(tmp_targets, tmp_preds)
-            #     if type(method) == list:
-            #         for sc, scs, m in zip(score, scores, method):
-            #             val_scores[f"[{eval_name}] {m}"] = sc
-            #     else:
-            #         val_scores[f"[{eval_name}] {method}"] = score
+        # tmp_preds = {}
+        # tmp_targets = {}
+        # acc = 0
+        # print("Total samples:", len(save_preds))
+        # for i, output in enumerate(save_preds):
+        #     item_id = f"{output['scene_id']}_{output['gt_id']}_{output['qid']}_{i}"
+        #     pred = output["pred"]
+        #     pred = clean_answer(pred)
+        #     ref_captions = [clean_answer(caption) for caption in output['ref_captions']]
+        #     if pred in ref_captions:
+        #         acc += 1
+        #     tmp_preds[item_id] = [{'caption': pred}]
+        #     ref_captions = [p.replace("\n", " ").strip() for p in ref_captions]
+        #     tmp_targets[item_id] = [{'caption': caption} for caption in ref_captions]
+        # tmp_preds = tokenizer.tokenize(tmp_preds)
+        # tmp_targets = tokenizer.tokenize(tmp_targets)
+        # acc = acc / len(save_preds)
+        # val_scores[f"[{eval_name}] Acc"] = acc
+        # for scorer, method in scorers:
+        #     score, scores = scorer.compute_score(tmp_targets, tmp_preds)
+        #     if type(method) == list:
+        #         for sc, scs, m in zip(score, scores, method):
+        #             val_scores[f"[{eval_name}] {m}"] = sc
+        #     else:
+        #         val_scores[f"[{eval_name}] {method}"] = score
         print(json.dumps(val_scores, indent=4))
     return val_scores
 
@@ -329,12 +330,8 @@ def setup_dataloaders(config):
     if config.distributed:
         num_tasks = get_world_size()
         global_rank = get_rank()
-        train_samplers = create_sampler(
-            train_datasets, [True] * len(train_datasets), num_tasks, global_rank
-        )
-        val_samplers = create_sampler(
-            val_datasets, [False] * len(val_datasets), num_tasks, global_rank
-        )
+        train_samplers = create_sampler(train_datasets, [True] * len(train_datasets), num_tasks, global_rank)
+        val_samplers = create_sampler(val_datasets, [False] * len(val_datasets), num_tasks, global_rank)
     else:
         train_samplers = [None] * len(train_datasets)
         val_samplers = [None] * len(val_datasets)
@@ -390,30 +387,17 @@ def main(config):
     )
     if is_main_process() and config.wandb.enable:
         wandb.watch(model)
-    
+
     save_step_interval = 1
     start_time = time.time()
     if not config.evaluate:
         logger.info("Start training")
         for epoch in range(start_epoch, config.scheduler.epochs):
-            global_step = train(
-                model,
-                model_without_ddp,
-                train_loaders,
-                val_loaders,
-                optimizer,
-                epoch,
-                global_step,
-                device,
-                scheduler,
-                scaler,
-                config
-            )
+            global_step = train(model, model_without_ddp, train_loaders, val_loaders, optimizer, epoch, global_step,
+                                device, scheduler, scaler, config)
             if is_main_process():
                 logger.info(f"Epoch {epoch}")
-                param_grad_dic = {
-                    k: v.requires_grad for (k, v) in model_without_ddp.named_parameters()
-                }
+                param_grad_dic = {k: v.requires_grad for (k, v) in model_without_ddp.named_parameters()}
                 state_dict = model_without_ddp.state_dict()
                 for k in list(state_dict.keys()):
                     if k in param_grad_dic.keys() and not param_grad_dic[k]:
@@ -421,14 +405,15 @@ def main(config):
                         del state_dict[k]
                 save_obj = {
                     "model": state_dict,
-                    # "optimizer": optimizer.state_dict(),
-                    # "scheduler": scheduler.state_dict(),
-                    # "scaler": scaler.state_dict(),
+                # "optimizer": optimizer.state_dict(),
+                # "scheduler": scheduler.state_dict(),
+                # "scaler": scaler.state_dict(),
                     "config": config,
                     "epoch": epoch,
                     "global_step": global_step,
                 }
-                if ((epoch+1) % save_step_interval == 0 or epoch == config.scheduler.epochs - 1) and config.do_save and not config.debug:
+                if ((epoch + 1) % save_step_interval == 0 or
+                        epoch == config.scheduler.epochs - 1) and config.do_save and not config.debug:
                     if config.get("save_latest", False):
                         torch.save(save_obj, join(config.output_dir, "ckpt_latest.pth"))
                     else:
